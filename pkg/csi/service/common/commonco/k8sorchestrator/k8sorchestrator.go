@@ -391,10 +391,15 @@ func Newk8sOrchestrator(ctx context.Context, controllerClusterFlavor cnstypes.Cn
 }
 
 func getReleasedVanillaFSS() map[string]struct{} {
+	// lab(v3.7.2-lab1): OnlineVolumeExtend and BlockVolumeSnapshot
+	// are removed from the always-released set so the vanilla
+	// feature-state ConfigMap controls them instead. Expansion
+	// remains supported in offline mode (CONTROLLER_EXPAND_VOLUME
+	// stays in the capability list below) and snapshot RPCs return
+	// Unimplemented when their FSS is disabled. This matches the lab
+	// policy of no online expansion and no snapshots.
 	return map[string]struct{}{
 		common.CSIMigration:                  {},
-		common.OnlineVolumeExtend:            {},
-		common.BlockVolumeSnapshot:           {},
 		common.CSIWindowsSupport:             {},
 		common.ListVolumes:                   {},
 		common.CnsMgrSuspendCreateVolume:     {},

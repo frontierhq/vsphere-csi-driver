@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/tls"
 
-	_ "crypto/tls/fipsonly"
+	// lab(v3.7.2-lab1): the unconditional `_ "crypto/tls/fipsonly"`
+	// import is removed along with GOFIPS/GOEXPERIMENT=boringcrypto
+	// so vCenter 6.7 U3 TLS works without EMS.
 	"crypto/x509"
 	"encoding/json"
 	"fmt"

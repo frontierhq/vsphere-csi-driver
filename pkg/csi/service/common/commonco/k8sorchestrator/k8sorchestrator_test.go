@@ -368,3 +368,56 @@ func TestSetWcpCapabilitiesMap_Success(t *testing.T) {
 	val, _ = WcpCapabilitiesMap.Load("CapabilityB")
 	assert.Equal(t, false, val)
 }
+
+// lab(v3.7.2-lab1): the OnlineVolumeExtend and BlockVolumeSnapshot
+// features are no longer hard-coded as released; the vanilla
+// feature-state ConfigMap controls them. These tests guard against a
+// future change that re-introduces either hard-coding.
+
+func TestReleasedVanillaFSS_NoHardCodedOnlineOrBlockSnapshot(t *testing.T) {
+	released := getReleasedVanillaFSS()
+
+	if _, ok := released[common.OnlineVolumeExtend]; ok {
+		t.Fatalf("OnlineVolumeExtend must not be hard-coded as released; "+
+			"it must be controlled by the vanilla feature-state ConfigMap")
+	}
+	if _, ok := released[common.BlockVolumeSnapshot]; ok {
+		t.Fatalf("BlockVolumeSnapshot must not be hard-coded as released; "+
+			"it must be controlled by the vanilla feature-state ConfigMap")
+	}
+}
+
+func TestReleasedVanillaFSS_StillIncludesCoreFeatures(t *testing.T) {
+	released := getReleasedVanillaFSS()
+
+	for _, fss := range []string{
+		common.CSIMigration,
+		common.CSIWindowsSupport,
+		common.ListVolumes,
+		common.CnsMgrSuspendCreateVolume,
+		common.CSIInternalGeneratedClusterID,
+		common.TopologyAwareFileVolume,
+		common.CSITransactionSupport,
+	} {
+		if _, ok := released[fss]; !ok {
+			t.Errorf("core feature %q missing from releasedVanillaFSS", fss)
+		}
+	}
+}
+
+func TestReleasedVanillaFSS_EmptyConfigMapDisablesOnlineAndBlockSnapshot(t *testing.T) {
+	// An empty feature-state ConfigMap disables both
+	// OnlineVolumeExtend and BlockVolumeSnapshot — they no longer
+	// ship as released. Empty-configmap behaviour is checked at the
+	// static helper level: getReleasedVanillaFSS() does not contain
+	// either key, so any IsFSSEnabled call against an empty parsed
+	// map (the default before the singleton has loaded anything) returns
+	// false.
+	orchestrator := &K8sOrchestrator{}
+	if orchestrator.IsFSSEnabled(context.Background(), common.OnlineVolumeExtend) {
+		t.Errorf("OnlineVolumeExtend must be disabled when ConfigMap is empty")
+	}
+	if orchestrator.IsFSSEnabled(context.Background(), common.BlockVolumeSnapshot) {
+		t.Errorf("BlockVolumeSnapshot must be disabled when ConfigMap is empty")
+	}
+}
