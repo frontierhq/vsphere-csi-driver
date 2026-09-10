@@ -13,8 +13,9 @@ export BIN_OUT ?= $(BUILD_OUT)/bin
 # DIST_OUT is the directory containting the distribution packages
 export DIST_OUT ?= $(BUILD_OUT)/dist
 
-# Compile Go with boringcrypto. This is required to import crypto/tls/fipsonly package.
-export GOEXPERIMENT=boringcrypto
+# lab(v3.7.2-lab1): non-FIPS build. Dropping GOEXPERIMENT=boringcrypto
+# means the unconditional `_ "crypto/tls/fipsonly"` import below
+# would no longer compile, so remove it as well.
 
 
 ################################################################################

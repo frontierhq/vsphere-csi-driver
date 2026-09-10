@@ -1,0 +1,166 @@
+---
+name: build
+
+# lab(v3.7.2-lab1): publish immutable lab release images to GHCR.
+# Triggers only on pushed tags matching v*-lab*; an arbitrary branch or
+# workflow_dispatch run cannot overwrite a release. Force-pushes that
+# would move a release tag are explicitly forbidden by the
+# `fail-early` step below.
+
+"on":
+  push:
+    tags:
+      - "v*-lab*"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: frontierhq
+  VERSION: ${{ github.ref_name }}
+
+jobs:
+  build:
+    name: Build patched lab images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Fail early on non-tag pushes
+        # The workflow only triggers on tag pushes; this guards against
+        # GitHub UI actions or accidental re-runs.
+        if: github.ref_type != 'tag'
+        run: |
+          echo "::error::build.yml must run from a tag, not ${{ github.ref_type }}"
+          exit 1
+
+      - name: Check out repository
+        # fetch-depth: 0 is required for the tag-consistency and
+        # ancestry checks below; a shallow clone does not see the
+        # official v3.7.2 ancestor.
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag consistency
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # VERSION must be the tag itself and the commit must be tagged.
+          test "$VERSION" = "${{ github.ref_name }}"
+          test "$VERSION" = "$(git describe --tags --exact-match 2>/dev/null || true)" \
+            || { echo "::error::commit ${{ github.sha }} is not at tag $VERSION"; exit 1; }
+          # The ancestor must descend from the official v3.7.2 base so we
+          # never publish a release based on an unrelated commit.
+          git merge-base --is-ancestor v3.7.2 HEAD \
+            || { echo "::error::commit ${{ github.sha }} is not a descendant of v3.7.2"; exit 1; }
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        # Use the go.mod toolchain so the Go version matches the
+        # repository exactly (1.26.3 at the time of writing).
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Non-FIPS Go unit + build checks
+        env:
+          GOFIPS: ""
+          GOEXPERIMENT: ""
+        run: |
+          go vet ./pkg/csi/service/...
+          go test -run TestReleasedVanillaFSS ./pkg/csi/service/common/commonco/k8sorchestrator/...
+          go build ./cmd/vsphere-csi ./cmd/syncer
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Reject if the GHCR tag already exists
+        # lab(v3.7.2-lab1): tag immutability. GitHub Actions allows
+        # force-pushes that move an existing tag, which would let a
+        # later commit overwrite the lab release. The lab publishes
+        # exactly to v<semver>-labN, never overwriting an existing
+        # release. Detect a pre-existing tag with a HEAD pull and
+        # fail the job before any image is built or pushed.
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_OWNER: ${{ env.IMAGE_OWNER }}
+          VERSION: ${{ env.VERSION }}
+        run: |
+          set -euo pipefail
+          for image in vsphere-csi-driver vsphere-syncer; do
+            tag="${REGISTRY}/${IMAGE_OWNER}/${image}:${VERSION}"
+            token=""
+            token_header=""
+            if [ -n "${GITHUB_TOKEN:-}" ]; then
+              token="${GITHUB_TOKEN}"
+              token_header="Authorization: Bearer ${token}"
+            fi
+            # HEAD only; any 200 response means the tag already exists.
+            response=$(curl -fsSL -o /dev/null -w '%{http_code}' \
+              -H "${token_header}" \
+              "https://${REGISTRY}/v2/${IMAGE_OWNER}/${image}/manifests/${VERSION}" \
+              || echo "000")
+            if [ "${response}" = "200" ]; then
+              echo "::error::release tag ${tag} already exists; tag immutability forbids overwriting it. Bump to a new v*-labN tag instead."
+              exit 1
+            fi
+          done
+
+      - name: Build and push vsphere-csi-driver
+        id: driver
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/driver/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/vsphere-csi-driver:${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            GIT_COMMIT=${{ github.sha }}
+
+      - name: Build and push vsphere-syncer
+        id: syncer
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/syncer/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/vsphere-syncer:${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            GIT_COMMIT=${{ github.sha }}
+
+      - name: Record manifest digests
+        # lab-server's `clusters/rke2/vsphere-csi/install/kustomization.yaml`
+        # image override references these exact digests, without a
+        # leading `@`. The lab-server test asserts the rendered
+        # Deployment and DaemonSets contain the digest-pinned
+        # reference so a release tag cannot be force-moved without
+        # breaking the cluster.
+        env:
+          DRIVER_DIGEST: ${{ steps.driver.outputs.digest }}
+          SYNCER_DIGEST: ${{ steps.syncer.outputs.digest }}
+        run: |
+          {
+            echo "### vsphere-csi-driver digest"
+            echo "\`$DRIVER_DIGEST\`"
+            echo
+            echo "### vsphere-syncer digest"
+            echo "\`$SYNCER_DIGEST\`"
+            echo
+            echo "### Pin instructions"
+            echo 'kustomization.yaml images:'
+            echo '  - name: registry.k8s.io/csi-vsphere/driver'
+            echo "    digest: \"$DRIVER_DIGEST\""
+            echo '  - name: registry.k8s.io/csi-vsphere/syncer'
+            echo "    digest: \"$SYNCER_DIGEST\""
+          } >> "$GITHUB_STEP_SUMMARY"

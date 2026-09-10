@@ -39,8 +39,9 @@ COPY go.mod go.sum ./
 COPY pkg/    pkg/
 COPY cmd/    cmd/
 ENV CGO_ENABLED=0
-ENV GOFIPS=1
-ENV GOEXPERIMENT="boringcrypto"
+# lab(v3.7.2-lab1): non-FIPS build. Removing GOFIPS and the
+# boringcrypto experiment keeps the binary on the standard Go
+# crypto backend so vCenter 6.7 U3 TLS works without EMS.
 ENV GOPROXY=${GOPROXY:-https://proxy.golang.org}
 RUN go build -a -ldflags="-w -s -extldflags=static -X sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service.Version=${VERSION}" -o vsphere-csi ./cmd/vsphere-csi
 

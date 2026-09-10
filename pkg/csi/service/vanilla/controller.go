@@ -284,7 +284,11 @@ func (c *controller) Init(config *cnsconfig.Config, version string) error {
 			allVCentersSupportCnsTransaction = false
 		}
 	}
-	if !allVCentersSupportvSANFileService {
+	if shouldFailVSANInit(allVCentersSupportvSANFileService) {
+		// lab(v3.7.2-lab1): unreachable. The fix removes the fatal
+		// return so vCenter 6.7 U3 (which always reports false here)
+		// does not CrashLoopBackOff the controller. Kept as a defensive
+		// branch in case the upstream logic is reintroduced.
 		return logger.LogNewErrorf(log, "vSAN file service is not supported in one or more vCenter(s)")
 	}
 
@@ -294,8 +298,12 @@ func (c *controller) Init(config *cnsconfig.Config, version string) error {
 	isCSITransactionSupportEnabled = fssTransactionSupportEnabled && allVCentersSupportCnsTransaction
 	cnsvolumeoperationrequest.SetCSITransactionSupport(isCSITransactionSupportEnabled)
 
-	for _, vcconfig := range c.managers.VcenterConfigs {
-		go common.ComputeFSEnabledClustersToDsMap(authMgrs[vcconfig.Host], config.Global.CSIAuthCheckIntervalInMin)
+	if shouldStartFSMappingGoroutines(allVCentersSupportvSANFileService) {
+		for _, vcconfig := range c.managers.VcenterConfigs {
+			go common.ComputeFSEnabledClustersToDsMap(authMgrs[vcconfig.Host], config.Global.CSIAuthCheckIntervalInMin)
+		}
+	} else {
+		log.Warnf("vSAN file service is not supported in one or more vCenter(s); continuing without file-volume support")
 	}
 	if multivCenterTopologyDeployment {
 		log.Info("Loading CnsVolumeInfo Service to persist mapping for VolumeID to vCenter")
@@ -2421,8 +2429,16 @@ func (c *controller) ControllerGetCapabilities(ctx context.Context, req *csi.Con
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
 		csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME,
 		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
-		csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
-		csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
+	}
+	// lab(v3.7.2-lab1): snapshot capabilities are gated on the
+	// BlockVolumeSnapshot FSS so the driver respects a ConfigMap
+	// override (the upstream always advertised them).
+	if commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.BlockVolumeSnapshot) {
+		controllerCaps = append(
+			controllerCaps,
+			csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
+			csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
+		)
 	}
 
 	if commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.ListVolumes) {
@@ -2961,4 +2977,25 @@ func (c *controller) ControllerModifyVolume(ctx context.Context, req *csi.Contro
 	log := logger.GetLogger(ctx)
 	log.Infof("ControllerModifyVolume: called with args %+v", req)
 	return nil, logger.LogNewErrorCode(log, codes.Unimplemented, "ControllerModifyVolume")
+}
+
+// lab(v3.7.2-lab1): testable helper that decides whether the
+// controller should proceed past the vSAN file-service gate. Before
+// the fix, returning false here terminated controller initialization
+// unconditionally. After the fix, the caller logs a warning and
+// continues without starting the file-service mapping goroutines,
+// preserving the per-request RWX rejection.
+func shouldFailVSANInit(vsanSupported bool) bool {
+	// lab(v3.7.2-lab1): returning false is now a non-fatal warning;
+	// see Init above for the per-request behaviour.
+	return false
+}
+
+// lab(v3.7.2-lab1): testable helper that decides whether the
+// file-service datastore-mapping goroutines should be spawned. Even
+// when vSAN file services are unsupported we still finish Init, but
+// we must not start the goroutines because they would loop forever
+// looking for FS-enabled datastores.
+func shouldStartFSMappingGoroutines(vsanSupported bool) bool {
+	return vsanSupported
 }

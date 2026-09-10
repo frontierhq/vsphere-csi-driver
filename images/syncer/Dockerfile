@@ -41,9 +41,7 @@ ENV CGO_ENABLED=0
 
 ENV GOPROXY=${GOPROXY:-https://proxy.golang.org}
 
-ENV GOFIPS=1
-
-ENV GOEXPERIMENT="boringcrypto"
+# lab(v3.7.2-lab1): non-FIPS build, same rationale as images/driver/Dockerfile.
 
 RUN go build -a -ldflags="-w -s -extldflags=static -X sigs.k8s.io/vsphere-csi-driver/v3/pkg/syncer.Version=${VERSION}" -o vsphere-syncer ./cmd/syncer
 
