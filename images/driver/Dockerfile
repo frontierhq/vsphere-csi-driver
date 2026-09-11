@@ -39,8 +39,8 @@ COPY go.mod go.sum ./
 COPY pkg/    pkg/
 COPY cmd/    cmd/
 ENV CGO_ENABLED=0
-ENV GOFIPS=1
-ENV GOEXPERIMENT="boringcrypto"
+# Use the standard Go crypto backend because vCenter 6.7 U3 does not
+# support the Extended Master Secret extension required by Go FIPS mode.
 ENV GOPROXY=${GOPROXY:-https://proxy.golang.org}
 RUN go build -a -ldflags="-w -s -extldflags=static -X sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service.Version=${VERSION}" -o vsphere-csi ./cmd/vsphere-csi
 

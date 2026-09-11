@@ -1,0 +1,86 @@
+---
+name: build
+
+on:
+  push:
+    tags:
+      - "v*-lab*"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: frontierhq
+
+jobs:
+  build:
+    name: Build patched lab images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test and build
+        env:
+          GOFIPS: ""
+          GOEXPERIMENT: ""
+        run: |
+          go vet ./pkg/csi/service/...
+          go test -count=1 ./pkg/csi/service/common/commonco/k8sorchestrator
+          go test -count=1 ./pkg/csi/service/vanilla
+          go build ./cmd/vsphere-csi ./cmd/syncer
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push vsphere-csi-driver
+        id: driver
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/driver/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/vsphere-csi-driver:${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            GIT_COMMIT=${{ github.sha }}
+
+      - name: Build and push vsphere-csi-syncer
+        id: syncer
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/syncer/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/vsphere-csi-syncer:${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            GIT_COMMIT=${{ github.sha }}
+
+      - name: Record manifest digests
+        env:
+          DRIVER_DIGEST: ${{ steps.driver.outputs.digest }}
+          SYNCER_DIGEST: ${{ steps.syncer.outputs.digest }}
+        run: |
+          {
+            echo "### vsphere-csi-driver digest"
+            echo "\`$DRIVER_DIGEST\`"
+            echo
+            echo "### vsphere-csi-syncer digest"
+            echo "\`$SYNCER_DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"

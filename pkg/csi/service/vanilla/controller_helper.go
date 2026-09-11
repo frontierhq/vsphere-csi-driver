@@ -30,9 +30,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/node"
 	cnsvolume "sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/volume"
-	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/vsphere"
+	cnsvsphere "sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/vsphere"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/prometheus"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/common"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/logger"
@@ -67,7 +66,9 @@ func validateVanillaControllerUnpublishVolumeRequest(ctx context.Context,
 // validate ExpandVolumeRequest for Vanilla CSI driver.
 // Function returns error if validation fails otherwise returns nil.
 func validateVanillaControllerExpandVolumeRequest(ctx context.Context,
-	req *csi.ControllerExpandVolumeRequest, isOnlineExpansionEnabled, isOnlineExpansionSupported bool) error {
+	req *csi.ControllerExpandVolumeRequest,
+	isOnlineExpansionEnabled, isOnlineExpansionSupported bool,
+	nodeProvider allNodesProvider) error {
 	log := logger.GetLogger(ctx)
 	if err := common.ValidateControllerExpandVolumeRequest(ctx, req); err != nil {
 		return err
@@ -79,14 +80,22 @@ func validateVanillaControllerExpandVolumeRequest(ctx context.Context,
 	}
 
 	// Check if it is an online expansion scenario and raise error.
-	nodeManager := node.GetManager(ctx)
-	nodes, err := nodeManager.GetAllNodes(ctx)
+	nodes, err := nodeProvider.GetAllNodes(ctx)
 	if err != nil {
 		msg := fmt.Sprintf("failed to find VirtualMachines for all registered nodes. Error: %v", err)
 		log.Error(msg)
 		return status.Error(codes.Internal, msg)
 	}
 	return common.IsOnlineExpansion(ctx, req.GetVolumeId(), nodes)
+}
+
+// allNodesProvider is the narrow seam used by
+// validateVanillaControllerExpandVolumeRequest to enumerate the
+// cluster's node VMs. It exists only so the offline branch can be
+// unit tested without invoking the global node-manager singleton;
+// the production call site passes c.nodeMgr.
+type allNodesProvider interface {
+	GetAllNodes(ctx context.Context) ([]*cnsvsphere.VirtualMachine, error)
 }
 
 // validateVanillaCreateSnapshotRequestRequest is the helper function to
@@ -146,8 +155,8 @@ func convertCnsVolumeType(ctx context.Context, cnsVolumeType string) string {
 }
 
 func getBlockVolumeIDToNodeUUIDMap(ctx context.Context, c *controller,
-	allnodeVMs []*vsphere.VirtualMachine) (map[string]string, error) {
-	var vCenters []*vsphere.VirtualCenter
+	allnodeVMs []*cnsvsphere.VirtualMachine) (map[string]string, error) {
+	var vCenters []*cnsvsphere.VirtualCenter
 	var err error
 
 	log := logger.GetLogger(ctx)
@@ -257,7 +266,7 @@ func getVCenterAndVolumeManagerForVolumeID(ctx context.Context, controller *cont
 }
 
 // getVCenterManagerForVCenter returns vCenter manager for the given volumeId.
-func getVCenterManagerForVCenter(ctx context.Context, controller *controller) vsphere.VirtualCenterManager {
+func getVCenterManagerForVCenter(ctx context.Context, controller *controller) cnsvsphere.VirtualCenterManager {
 	return controller.managers.VcenterManager
 }
 

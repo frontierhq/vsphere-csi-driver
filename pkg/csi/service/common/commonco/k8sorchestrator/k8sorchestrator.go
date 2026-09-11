@@ -391,10 +391,10 @@ func Newk8sOrchestrator(ctx context.Context, controllerClusterFlavor cnstypes.Cn
 }
 
 func getReleasedVanillaFSS() map[string]struct{} {
+	// Online expansion and snapshots are controlled by the Vanilla feature-state
+	// ConfigMap. Controller expansion remains available for detached volumes.
 	return map[string]struct{}{
 		common.CSIMigration:                  {},
-		common.OnlineVolumeExtend:            {},
-		common.BlockVolumeSnapshot:           {},
 		common.CSIWindowsSupport:             {},
 		common.ListVolumes:                   {},
 		common.CnsMgrSuspendCreateVolume:     {},

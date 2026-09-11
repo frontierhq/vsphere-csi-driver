@@ -284,18 +284,18 @@ func (c *controller) Init(config *cnsconfig.Config, version string) error {
 			allVCentersSupportCnsTransaction = false
 		}
 	}
-	if !allVCentersSupportvSANFileService {
-		return logger.LogNewErrorf(log, "vSAN file service is not supported in one or more vCenter(s)")
-	}
-
 	// CSI Transaction Support requires both FSS to be enabled AND all vCenters to support CNS transactions
 	fssTransactionSupportEnabled := commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx,
 		common.CSITransactionSupport)
 	isCSITransactionSupportEnabled = fssTransactionSupportEnabled && allVCentersSupportCnsTransaction
 	cnsvolumeoperationrequest.SetCSITransactionSupport(isCSITransactionSupportEnabled)
 
-	for _, vcconfig := range c.managers.VcenterConfigs {
-		go common.ComputeFSEnabledClustersToDsMap(authMgrs[vcconfig.Host], config.Global.CSIAuthCheckIntervalInMin)
+	if shouldStartFSMappingGoroutines(allVCentersSupportvSANFileService) {
+		for _, vcconfig := range c.managers.VcenterConfigs {
+			go common.ComputeFSEnabledClustersToDsMap(authMgrs[vcconfig.Host], config.Global.CSIAuthCheckIntervalInMin)
+		}
+	} else {
+		log.Warnf("vSAN file service is not supported in one or more vCenter(s); continuing without file-volume support")
 	}
 	if multivCenterTopologyDeployment {
 		log.Info("Loading CnsVolumeInfo Service to persist mapping for VolumeID to vCenter")
@@ -2036,7 +2036,7 @@ func (c *controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 				"failed to check if online expansion is supported due to error: %v", err)
 		}
 		isOnlineExpansionEnabled := commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.OnlineVolumeExtend)
-		err = validateVanillaControllerExpandVolumeRequest(ctx, req, isOnlineExpansionEnabled, isOnlineExpansionSupported)
+		err = validateVanillaControllerExpandVolumeRequest(ctx, req, isOnlineExpansionEnabled, isOnlineExpansionSupported, c.nodeMgr)
 		if err != nil {
 			msg := fmt.Sprintf("validation for ExpandVolume Request: %+v has failed. Error: %v",
 				req, err)
@@ -2417,30 +2417,45 @@ func (c *controller) ControllerGetCapabilities(ctx context.Context, req *csi.Con
 	log := logger.GetLogger(ctx)
 	log.Infof("ControllerGetCapabilities: called with args %+v", req)
 
-	controllerCaps := []csi.ControllerServiceCapability_RPC_Type{
+	blockVolumeSnapshot := commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.BlockVolumeSnapshot)
+	listVolumes := commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.ListVolumes)
+
+	var caps []*csi.ControllerServiceCapability
+	for _, rpc := range controllerCapabilityRPCs(blockVolumeSnapshot, listVolumes) {
+		caps = append(caps, &csi.ControllerServiceCapability{
+			Type: &csi.ControllerServiceCapability_Rpc{
+				Rpc: &csi.ControllerServiceCapability_RPC{
+					Type: rpc,
+				},
+			},
+		})
+	}
+	return &csi.ControllerGetCapabilitiesResponse{Capabilities: caps}, nil
+}
+
+// controllerCapabilityRPCs constructs the ordered capability list advertised by
+// ControllerGetCapabilities. EXPAND_VOLUME remains available for offline expansion.
+func controllerCapabilityRPCs(blockVolumeSnapshot, listVolumes bool) []csi.ControllerServiceCapability_RPC_Type {
+	rpcs := []csi.ControllerServiceCapability_RPC_Type{
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
 		csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME,
 		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
-		csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
-		csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
 	}
-
-	if commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.ListVolumes) {
-		controllerCaps = append(controllerCaps, csi.ControllerServiceCapability_RPC_LIST_VOLUMES,
-			csi.ControllerServiceCapability_RPC_LIST_VOLUMES_PUBLISHED_NODES)
+	if blockVolumeSnapshot {
+		rpcs = append(
+			rpcs,
+			csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
+			csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
+		)
 	}
-	var caps []*csi.ControllerServiceCapability
-	for _, cap := range controllerCaps {
-		c := &csi.ControllerServiceCapability{
-			Type: &csi.ControllerServiceCapability_Rpc{
-				Rpc: &csi.ControllerServiceCapability_RPC{
-					Type: cap,
-				},
-			},
-		}
-		caps = append(caps, c)
+	if listVolumes {
+		rpcs = append(
+			rpcs,
+			csi.ControllerServiceCapability_RPC_LIST_VOLUMES,
+			csi.ControllerServiceCapability_RPC_LIST_VOLUMES_PUBLISHED_NODES,
+		)
 	}
-	return &csi.ControllerGetCapabilitiesResponse{Capabilities: caps}, nil
+	return rpcs
 }
 
 func (c *controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (
@@ -2961,4 +2976,10 @@ func (c *controller) ControllerModifyVolume(ctx context.Context, req *csi.Contro
 	log := logger.GetLogger(ctx)
 	log.Infof("ControllerModifyVolume: called with args %+v", req)
 	return nil, logger.LogNewErrorCode(log, codes.Unimplemented, "ControllerModifyVolume")
+}
+
+// shouldStartFSMappingGoroutines prevents file-service discovery from running
+// when vSAN file services are unavailable.
+func shouldStartFSMappingGoroutines(vsanSupported bool) bool {
+	return vsanSupported
 }
