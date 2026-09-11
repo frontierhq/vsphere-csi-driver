@@ -7,7 +7,7 @@ name: build
 # would move a release tag are explicitly forbidden by the
 # `fail-early` step below.
 
-"on":
+on:
   push:
     tags:
       - "v*-lab*"
@@ -94,7 +94,7 @@ jobs:
           VERSION: ${{ env.VERSION }}
         run: |
           set -euo pipefail
-          for image in vsphere-csi-driver vsphere-syncer; do
+          for image in vsphere-csi-driver vsphere-csi-syncer; do
             tag="${REGISTRY}/${IMAGE_OWNER}/${image}:${VERSION}"
             token=""
             token_header=""
@@ -126,7 +126,7 @@ jobs:
             VERSION=${{ github.ref_name }}
             GIT_COMMIT=${{ github.sha }}
 
-      - name: Build and push vsphere-syncer
+      - name: Build and push vsphere-csi-syncer
         id: syncer
         uses: docker/build-push-action@v6
         with:
@@ -134,7 +134,7 @@ jobs:
           file: images/syncer/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/vsphere-syncer:${{ github.ref_name }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/vsphere-csi-syncer:${{ github.ref_name }}
           build-args: |
             VERSION=${{ github.ref_name }}
             GIT_COMMIT=${{ github.sha }}
@@ -154,7 +154,7 @@ jobs:
             echo "### vsphere-csi-driver digest"
             echo "\`$DRIVER_DIGEST\`"
             echo
-            echo "### vsphere-syncer digest"
+            echo "### vsphere-csi-syncer digest"
             echo "\`$SYNCER_DIGEST\`"
             echo
             echo "### Pin instructions"
