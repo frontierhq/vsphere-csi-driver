@@ -369,20 +369,18 @@ func TestSetWcpCapabilitiesMap_Success(t *testing.T) {
 	assert.Equal(t, false, val)
 }
 
-// lab(v3.7.2-lab1): the OnlineVolumeExtend and BlockVolumeSnapshot
-// features are no longer hard-coded as released; the vanilla
-// feature-state ConfigMap controls them. These tests guard against a
-// future change that re-introduces either hard-coding.
+// OnlineVolumeExtend and BlockVolumeSnapshot are controlled by the Vanilla
+// feature-state ConfigMap rather than being hard-coded as released.
 
 func TestReleasedVanillaFSS_NoHardCodedOnlineOrBlockSnapshot(t *testing.T) {
 	released := getReleasedVanillaFSS()
 
 	if _, ok := released[common.OnlineVolumeExtend]; ok {
-		t.Fatalf("OnlineVolumeExtend must not be hard-coded as released; "+
+		t.Fatalf("OnlineVolumeExtend must not be hard-coded as released; " +
 			"it must be controlled by the vanilla feature-state ConfigMap")
 	}
 	if _, ok := released[common.BlockVolumeSnapshot]; ok {
-		t.Fatalf("BlockVolumeSnapshot must not be hard-coded as released; "+
+		t.Fatalf("BlockVolumeSnapshot must not be hard-coded as released; " +
 			"it must be controlled by the vanilla feature-state ConfigMap")
 	}
 }
@@ -405,15 +403,52 @@ func TestReleasedVanillaFSS_StillIncludesCoreFeatures(t *testing.T) {
 	}
 }
 
+// TestReleasedVanillaFSS_VanillaFlavorHonorsReleasedMap asserts a
+// real Vanilla-flavoured orchestrator with a populated
+// releasedVanillaFSS map honours that map: a key present in the
+// released set is reported enabled; a key absent is reported
+// disabled. This is the production code path the lab relies on for
+// GA'ed features.
+func TestReleasedVanillaFSS_VanillaFlavorHonorsReleasedMap(t *testing.T) {
+	released := map[string]struct{}{
+		common.CSIMigration:      {},
+		common.CSIWindowsSupport: {},
+	}
+	orchestrator := &K8sOrchestrator{
+		clusterFlavor: cnstypes.CnsClusterFlavorVanilla,
+		internalFSS: FSSConfigMapInfo{
+			featureStatesLock: &sync.RWMutex{},
+		},
+		releasedVanillaFSS: released,
+	}
+	ctx := context.Background()
+
+	if !orchestrator.IsFSSEnabled(ctx, common.CSIMigration) {
+		t.Errorf("releasedVanillaFSS lookup must return true for %q", common.CSIMigration)
+	}
+	if !orchestrator.IsFSSEnabled(ctx, common.CSIWindowsSupport) {
+		t.Errorf("releasedVanillaFSS lookup must return true for %q", common.CSIWindowsSupport)
+	}
+	if orchestrator.IsFSSEnabled(ctx, "unknown/feature") {
+		t.Errorf("releasedVanillaFSS lookup must return false for a key absent from the map")
+	}
+}
+
 func TestReleasedVanillaFSS_EmptyConfigMapDisablesOnlineAndBlockSnapshot(t *testing.T) {
 	// An empty feature-state ConfigMap disables both
 	// OnlineVolumeExtend and BlockVolumeSnapshot — they no longer
-	// ship as released. Empty-configmap behaviour is checked at the
-	// static helper level: getReleasedVanillaFSS() does not contain
-	// either key, so any IsFSSEnabled call against an empty parsed
-	// map (the default before the singleton has loaded anything) returns
-	// false.
-	orchestrator := &K8sOrchestrator{}
+	// ship as released. A real Vanilla-flavoured orchestrator
+	// whose internalFSS map is empty must return false for both
+	// keys, even though the production code defaults to a zero
+	// clusterFlavor.
+	orchestrator := &K8sOrchestrator{
+		clusterFlavor: cnstypes.CnsClusterFlavorVanilla,
+		internalFSS: FSSConfigMapInfo{
+			featureStates:     map[string]string{},
+			featureStatesLock: &sync.RWMutex{},
+		},
+		releasedVanillaFSS: getReleasedVanillaFSS(),
+	}
 	if orchestrator.IsFSSEnabled(context.Background(), common.OnlineVolumeExtend) {
 		t.Errorf("OnlineVolumeExtend must be disabled when ConfigMap is empty")
 	}

@@ -284,14 +284,6 @@ func (c *controller) Init(config *cnsconfig.Config, version string) error {
 			allVCentersSupportCnsTransaction = false
 		}
 	}
-	if shouldFailVSANInit(allVCentersSupportvSANFileService) {
-		// lab(v3.7.2-lab1): unreachable. The fix removes the fatal
-		// return so vCenter 6.7 U3 (which always reports false here)
-		// does not CrashLoopBackOff the controller. Kept as a defensive
-		// branch in case the upstream logic is reintroduced.
-		return logger.LogNewErrorf(log, "vSAN file service is not supported in one or more vCenter(s)")
-	}
-
 	// CSI Transaction Support requires both FSS to be enabled AND all vCenters to support CNS transactions
 	fssTransactionSupportEnabled := commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx,
 		common.CSITransactionSupport)
@@ -2044,7 +2036,7 @@ func (c *controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 				"failed to check if online expansion is supported due to error: %v", err)
 		}
 		isOnlineExpansionEnabled := commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.OnlineVolumeExtend)
-		err = validateVanillaControllerExpandVolumeRequest(ctx, req, isOnlineExpansionEnabled, isOnlineExpansionSupported)
+		err = validateVanillaControllerExpandVolumeRequest(ctx, req, isOnlineExpansionEnabled, isOnlineExpansionSupported, c.nodeMgr)
 		if err != nil {
 			msg := fmt.Sprintf("validation for ExpandVolume Request: %+v has failed. Error: %v",
 				req, err)
@@ -2425,38 +2417,45 @@ func (c *controller) ControllerGetCapabilities(ctx context.Context, req *csi.Con
 	log := logger.GetLogger(ctx)
 	log.Infof("ControllerGetCapabilities: called with args %+v", req)
 
-	controllerCaps := []csi.ControllerServiceCapability_RPC_Type{
+	blockVolumeSnapshot := commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.BlockVolumeSnapshot)
+	listVolumes := commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.ListVolumes)
+
+	var caps []*csi.ControllerServiceCapability
+	for _, rpc := range controllerCapabilityRPCs(blockVolumeSnapshot, listVolumes) {
+		caps = append(caps, &csi.ControllerServiceCapability{
+			Type: &csi.ControllerServiceCapability_Rpc{
+				Rpc: &csi.ControllerServiceCapability_RPC{
+					Type: rpc,
+				},
+			},
+		})
+	}
+	return &csi.ControllerGetCapabilitiesResponse{Capabilities: caps}, nil
+}
+
+// controllerCapabilityRPCs constructs the ordered capability list advertised by
+// ControllerGetCapabilities. EXPAND_VOLUME remains available for offline expansion.
+func controllerCapabilityRPCs(blockVolumeSnapshot, listVolumes bool) []csi.ControllerServiceCapability_RPC_Type {
+	rpcs := []csi.ControllerServiceCapability_RPC_Type{
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
 		csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME,
 		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
 	}
-	// lab(v3.7.2-lab1): snapshot capabilities are gated on the
-	// BlockVolumeSnapshot FSS so the driver respects a ConfigMap
-	// override (the upstream always advertised them).
-	if commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.BlockVolumeSnapshot) {
-		controllerCaps = append(
-			controllerCaps,
+	if blockVolumeSnapshot {
+		rpcs = append(
+			rpcs,
 			csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
 			csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
 		)
 	}
-
-	if commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.ListVolumes) {
-		controllerCaps = append(controllerCaps, csi.ControllerServiceCapability_RPC_LIST_VOLUMES,
-			csi.ControllerServiceCapability_RPC_LIST_VOLUMES_PUBLISHED_NODES)
+	if listVolumes {
+		rpcs = append(
+			rpcs,
+			csi.ControllerServiceCapability_RPC_LIST_VOLUMES,
+			csi.ControllerServiceCapability_RPC_LIST_VOLUMES_PUBLISHED_NODES,
+		)
 	}
-	var caps []*csi.ControllerServiceCapability
-	for _, cap := range controllerCaps {
-		c := &csi.ControllerServiceCapability{
-			Type: &csi.ControllerServiceCapability_Rpc{
-				Rpc: &csi.ControllerServiceCapability_RPC{
-					Type: cap,
-				},
-			},
-		}
-		caps = append(caps, c)
-	}
-	return &csi.ControllerGetCapabilitiesResponse{Capabilities: caps}, nil
+	return rpcs
 }
 
 func (c *controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (
@@ -2979,23 +2978,8 @@ func (c *controller) ControllerModifyVolume(ctx context.Context, req *csi.Contro
 	return nil, logger.LogNewErrorCode(log, codes.Unimplemented, "ControllerModifyVolume")
 }
 
-// lab(v3.7.2-lab1): testable helper that decides whether the
-// controller should proceed past the vSAN file-service gate. Before
-// the fix, returning false here terminated controller initialization
-// unconditionally. After the fix, the caller logs a warning and
-// continues without starting the file-service mapping goroutines,
-// preserving the per-request RWX rejection.
-func shouldFailVSANInit(vsanSupported bool) bool {
-	// lab(v3.7.2-lab1): returning false is now a non-fatal warning;
-	// see Init above for the per-request behaviour.
-	return false
-}
-
-// lab(v3.7.2-lab1): testable helper that decides whether the
-// file-service datastore-mapping goroutines should be spawned. Even
-// when vSAN file services are unsupported we still finish Init, but
-// we must not start the goroutines because they would loop forever
-// looking for FS-enabled datastores.
+// shouldStartFSMappingGoroutines prevents file-service discovery from running
+// when vSAN file services are unavailable.
 func shouldStartFSMappingGoroutines(vsanSupported bool) bool {
 	return vsanSupported
 }
